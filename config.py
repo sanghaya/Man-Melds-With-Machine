@@ -1,11 +1,10 @@
-
 # set subjective parameters for UX
 PARAMS = {
-    'GAIN': 5000,               # higher gain = faster cursor movement
-    'DAMP': 50,                 # higher damping = less jitter when holding your hand still
-    'SENSITIVITY': 10,          # higher sensitivity = expands region on the screen where your hand is considered to be held still
-    'STEPS': 20,                # higher steps = smoother cursor movement (too much and it will become slow)
-    'DELAY': 0.0001             # higher delay = longer time between calculating each step of the cursor position. avoid high steps and high delay
+    'GAIN': 8000,               # higher = slower cursor movement (was 2000)
+    'DAMP': 100,               # higher = more stability when holding still (was 60)
+    'SENSITIVITY': 15,         # higher = larger "stable" region (was 5)
+    'STEPS': 20,               # keep this the same for smooth movement
+    'DELAY': 0.0001            # lower = faster response (was 0.0002)
 }
 
 # mediapipe landmarks

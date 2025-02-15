@@ -37,6 +37,8 @@ last_click = 0
 cooldown = 0.5          # seconds
 scroll_anchor = None
 
+# At the top of the file, after imports
+print("Loaded PARAMS:", PARAMS)  # Debug print
 
 ########
 class StopException(Exception):
@@ -44,17 +46,13 @@ class StopException(Exception):
     pass
 
 def map_to_screen(loc):
-    """
-    Map integer coordinates received over serial (in range 0->1000) to screen coordinates
-    Includes zoom to avoid edge effects
-    """
+    """Map integer coordinates received over serial (in range 0->1000) to screen coordinates"""
     def zoom(value, screen_size):
         if value < 200:
-            return 0  # Minimum screen coordinate
+            return 0
         elif value > 800:
-            return screen_size  # Maximum screen coordinate
+            return screen_size
         else:
-            # interpolate
             return int(((value - 200) / 600) * screen_size)
 
     screen_x = int(zoom(loc[0], SCREEN_WIDTH))
@@ -62,47 +60,33 @@ def map_to_screen(loc):
     return [screen_x, screen_y]
 
 def velocity_scale(cur, tar, GAIN=PARAMS['GAIN'], DAMP=PARAMS['DAMP'], SENSITIVITY=PARAMS['SENSITIVITY'], MIN_STEP=1):
-    """
-    Adjust speed of cursor based on distance between current and target position by calculating a scaling factor
-    :param cur: current [x,y] coords of cursor
-    :param tar: target [x,y] coords of cursor
-    :param GAIN: higher GAIN = bigger step size, meaning faster cursor movement
-    :param DAMP: damping multiplier at small distances - higher DAMP = smaller step sizes = less static jitter
-    :param SENSITIVITY: damping limit - damping applied when distance < SENSITIVITY
-    :param MIN_STEP: Stops division by zero
-    """
-
-    # calculate Euclidian distance between current and target locations of the hand
+    """Adjust speed of cursor based on distance"""
+    # calculate Euclidian distance
     distance = ((tar[0] - cur[0]) ** 2 + (tar[1] - cur[1]) ** 2) ** 0.5
 
-    # apply damping to limit step size when distances are very small (reduce static jitter)
+    # apply damping
     damping = max(1, SENSITIVITY / max(distance, 1e-6))
     damping *= DAMP if damping > 1 else 1
 
-    # calculate scaling factor for cursor steps
+    # calculate scaling factor
     if distance < SENSITIVITY:
-        # drastically reduce GAIN for small movements
         scaling_factor = MIN_STEP + (distance * damping)
     else:
         scaling_factor = MIN_STEP + (distance / GAIN) * damping
 
-    # print(int(distance), int(scaling_factor))
-
-    # calculate cursor step sizes
+    # calculate steps
     dx = (tar[0] - cur[0]) / scaling_factor
     dy = (tar[1] - cur[1]) / scaling_factor
 
-    # calculate new (intermediate) positions
+    # calculate new positions
     new = [cur[0] + dx, cur[1] + dy]
 
-    # interpolate movement for large distances only
+    # Move cursor
     if distance > SENSITIVITY:
         interpolate(cur, new)
-
     else:
-        mouse.position = (new[0], new[1])
+        mouse.position = (int(new[0]), int(new[1]))
 
-    # return values to loop
     return new
 
 def lerp(start, end, factor):
@@ -162,112 +146,86 @@ async def read_serial(serial_reader, data_queue):
 
 async def process_data(data_queue, cur):
     """Process serial data and perform cursor actions"""
-
     global last_click, scroll_anchor
 
     while True:
+        try:
+            # Get the next packet from the queue
+            data = await data_queue.get()
 
-        # Get the next packet from the queue
-        data = await data_queue.get()
-
-        # Read movement packets
-        if len(data) == 5:  # Movement and scroll packets: 1 char + 2 unsigned integers
-
-            try:
-                start_processing = time.time()  # Start timing data processing
-
-                # scrolling mode detected
-                if data.startswith(b'S'):
-
-                    # Unpack binary data
-                    _, scroll_loc, anchor_loc = struct.unpack('=c2H', data)
-                    # Flip y-axis
-                    scroll_loc = 1000 - int(scroll_loc)
-                    anchor_loc = 1000 - int(anchor_loc)
-
-                    # set scroll anchor (relative to hand position)
-                    if scroll_anchor is None:
-                        scroll_anchor = anchor_loc
-
-                    scroll_y = int((scroll_anchor - scroll_loc) / 10)
-
-                    mouse.scroll(dx=0, dy=scroll_y)
-
-                # cursor movement mode (default)
-                else:
-                    scroll_anchor = None
-
-                    # Unpack binary data (1 char + 2 unsigned integers)
-                    hand_label, x_loc, y_loc = struct.unpack('=c2H', data)
-
-                    # Flip y-axis
-                    loc = [int(x_loc), 1000 - int(y_loc)]
-
-                    # Convert to screen coordinates
-                    tar = map_to_screen(loc)
-
-                    # Velocity scaling and move cursor
-                    # velocity_start = time.time()  # Start timing velocity scaling
-                    cur = velocity_scale(cur, tar)
-                    # velocity_end = time.time()  # End timing velocity scaling
-                    # print(f"Time for velocity scaling and cursor movement: {velocity_end - velocity_start:.6f} seconds")
-
-                    ## no velocity scaling option
-                    # cur = map_to_screen(loc)
-                    # mouse.position = (cur[0], cur[1])
-
-                    # print(f"{hand_label.decode()}: x={int(cur[0])}, y={int(cur[1])}")
-
-            except Exception as e:
-                print(f"Error processing movement data: {e}")
-
-        # Read command packets
-        elif len(data) == 1:  # Command packet: 1 byte
-            command = data
-            if command == b'C':  # Click command
-                current_time = time.time()
-                if current_time - last_click > cooldown:
-                    mouse.click(Button.left)
-                    print("CLICK")
-                    last_click = current_time
-                else:
-                    print("Double click blocked")
-            elif command == b'E':  # Exit command
-                raise StopException()
-            if command == b'F':  # next tab
-                current_time = time.time()
-                if current_time - last_click > cooldown:
+            # Handle command packets (length 2 - includes newline character)
+            if len(data) == 2:
+                command = data[0:1]  # Get just the command byte
+                if command == b'C':
+                    current_time = time.time()
+                    if current_time - last_click > cooldown:
+                        mouse.click(Button.left)
+                        last_click = current_time
+                elif command == b'E':
+                    raise StopException()
+                elif command == b'F':
                     with pykeyboard.pressed(Key.ctrl):
                         pykeyboard.press(Key.tab)
                         pykeyboard.release(Key.tab)
-                    print("NEXT TAB")
-                    last_click = current_time
-                else:
-                    print("Double tab forward blocked")
-            if command == b'B':  # previous tab
-                current_time = time.time()
-                if current_time - last_click > cooldown:
+                elif command == b'B':
                     with pykeyboard.pressed(Key.ctrl):
                         with pykeyboard.pressed(Key.shift):
                             pykeyboard.press(Key.tab)
                             pykeyboard.release(Key.tab)
-                    print("PREVIOUS TAB")
-                    last_click = current_time
-                else:
-                    print("Double tab back blocked")
-            if command == b'M':  # mission control
-                current_time = time.time()
-                if current_time - last_click > cooldown:
+                elif command == b'M':
                     pyautogui.keyDown("ctrl")
                     pyautogui.press("up")
                     pyautogui.keyUp("ctrl")
-                    print("MISSION CONTROL")
-                    last_click = current_time
-                else:
-                    print("Double mission control blocked")
+                continue
 
-        end_processing = time.time()  # End timing data processing
-        # print(f"Time to process data packet: {end_processing - start_processing:.6f} seconds")
+            # Handle movement packets (length 6 - includes newline character)
+            if len(data) == 6:
+                try:
+                    command = data[0:1]
+
+                    if command == b'S':
+                        # Unpack binary data (ignore newline)
+                        _, scroll_loc, anchor_loc = struct.unpack('=c2H', data[:-1])
+                        
+                        # Flip y-axis
+                        scroll_loc = 1000 - int(scroll_loc)
+                        anchor_loc = 1000 - int(anchor_loc)
+
+                        # set scroll anchor (relative to hand position)
+                        if scroll_anchor is None:
+                            scroll_anchor = anchor_loc
+
+                        scroll_y = int((scroll_anchor - scroll_loc) / 10)
+                        mouse.scroll(dx=0, dy=scroll_y)
+
+                    elif command in [b'R', b'L']:
+                        scroll_anchor = None
+
+                        # Unpack binary data (ignore newline)
+                        hand_label, x_loc, y_loc = struct.unpack('=c2H', data[:-1])
+
+                        # Flip y-axis
+                        loc = [int(x_loc), 1000 - int(y_loc)]
+
+                        # Convert to screen coordinates
+                        tar = map_to_screen(loc)
+
+                        # Get current mouse position
+                        cur_pos = list(mouse.position)
+
+                        # Move cursor with velocity scaling
+                        new_pos = velocity_scale(cur_pos, tar)
+                        
+                        # Update current position
+                        cur = new_pos
+
+                except Exception as e:
+                    print(f"Error processing movement data: {e}")
+
+        except StopException:
+            break
+        except Exception as e:
+            print(f"Error in process_data main loop: {e}")
 
 
 async def main(data_queue=None):
@@ -309,4 +267,18 @@ async def main(data_queue=None):
 
 
 if __name__ == "__main__":
+    # After initializing mouse controller
+    print("Testing mouse controller...")
+    try:
+        original_pos = mouse.position
+        print(f"Original position: {original_pos}")
+        test_pos = (100, 100)
+        mouse.position = test_pos
+        print(f"Moved to test position: {test_pos}")
+        time.sleep(1)
+        mouse.position = original_pos
+        print("Mouse controller test successful")
+    except Exception as e:
+        print(f"Mouse controller test failed: {e}")
+
     asyncio.run(main())
